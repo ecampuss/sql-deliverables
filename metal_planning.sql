@@ -1,30 +1,13 @@
-WITH current_date AS (
+WITH cur_date AS (
 /* table to get current date
  * where-used list:
  * 	- materials 
  * */
 SELECT 
-	getdate() AS today_date,
-	DATE(today_date) AS cur_date
-),
-
-previous_month AS (
-/* table to get previous month data based on current date
- * where-used list:
- * 	- NOT BEING USED YET 
- * */
-SELECT 
-	month_number
-	,year_number 
-	,CONCAT(month_number,'-',year_number) AS month_year_number
-FROM 
-	DW_PROD.MART.DIM_DATE, current_date
-WHERE 
-	CASE 
-		WHEN MONTH(current_date.cur_date) = 1 
-		THEN month_number = month(current_date.cur_date)-1 AND year_number = year(current_date.cur_date)-1 
-		ELSE month_number = month(current_date.cur_date)-1 AND year_number = year(current_date.cur_date)
-	END 
+	getdate() AS today_date
+	,DATE(today_date) AS cur_date
+	,MONTH(cur_date) AS cur_month
+	,YEAR(cur_date) AS cur_year
 ),
 
 materials AS (
@@ -50,6 +33,7 @@ SELECT
 	,mseg.bwart AS mov_type
 	,mseg.bukrs AS comp_code
 	,mseg.werks AS plant
+	,mseg.lgort AS sto_loc
 	,mseg.shkzg AS deb_cre
 	,IFF(deb_cre = 'H', mseg.dmbtr, 0) AS amount_in
 	,IFF(deb_cre = 'H', mseg.menge, 0) AS quantity_in
@@ -60,7 +44,8 @@ SELECT
 	,TRY_TO_DATE(mkpf.budat, 'YYYYMMDD') AS posting_date
 	,LAST_DAY(posting_date) AS last_day	
 	,mkpf.mjahr AS doc_year
-	,DATEDIFF(day, posting_date, current_date.cur_date) AS aging
+	,month(last_day) AS doc_month
+	,DATEDIFF(day, posting_date, cur_date.cur_date) AS aging
 	,IFF(aging>=0 AND aging<=30, '000-030'
 	,IFF(aging>=31 AND aging<=60, '031-060'
 	,IFF(aging>=61 AND aging<=90, '061-090'
@@ -70,40 +55,28 @@ SELECT
 	,IFF(aging>=361 AND aging<=720, '361-720' 
 	,IFF(aging>720, '720+', '')))))))) AS aging_group
 FROM
-	current_date, DW_STAGING.SAP_EUBEV.mseg 
+	cur_date, DW_STAGING.SAP_EUBEV.mseg 
 	INNER JOIN DW_STAGING.SAP_EUBEV.mkpf 
 		ON  mseg.mblnr = mkpf.mblnr 
-		AND mseg.mjahr = mkpf.mjahr 
-		/* AND mkpf.mjahr LIKE '2022%' */
+		AND mseg.mjahr = mkpf.mjahr
 	INNER JOIN materials 
 		ON mseg.matnr = materials.mat_id
-), 
-
-stock_aging_pos AS (
-/* table to get stock position base on aging groups 
- * where-used list:
- * 	- main
- * */
-SELECT  
-	comp_code
-	,plant
-	,material
-	,aging_group
-	,SUM(amount_in) + SUM(amount_out) AS aging_stock
-FROM 
-	material_details
-GROUP BY 1, 2, 3, 4
-ORDER BY 1 ASC, 2 ASC, 3 ASC, 4 DESC
+	WHERE 
+		doc_year = cur_date.cur_year
+		AND doc_month = cur_date.cur_month
+		
 )
 
 SELECT
-	comp_code
-	,plant
-	,material
-	,aging_group
-	,aging_stock
-	,IFNULL(lag(aging_stock) OVER (ORDER BY 1 ASC, 2 ASC, 3 ASC, 4 DESC), 0) AS new_actual_stock /*function to get value from previous row*/ 
-	,aging_stock - new_actual_stock AS stock_actual_position
-FROM 
-	stock_aging_pos
-ORDER BY 1 ASC, 2 ASC, 3 ASC, 4 DESC
+    comp_code
+    ,plant
+    ,material
+    ,doc_year
+    ,doc_month
+    ,quantity_in
+    ,Quantity_out
+FROM
+	material_details
+	WHERE 
+		material = '000000000200001702'
+		AND plant = 'RSBL'
