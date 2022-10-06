@@ -1,3 +1,4 @@
+--table to extract a primary key from MARDH to later join with other tables
 WITH materials AS (
 SELECT
     DISTINCT CONCAT(matnr, werks) AS pk
@@ -5,6 +6,7 @@ FROM
     BALL_SANDBOX.USER_ESANTOS2.mardh
 ),
 
+--material master data for raw material only
 mat_master AS (
 SELECT 
 	RIGHT(matnr,9) AS matnr
@@ -16,6 +18,7 @@ ORDER BY
 	1
 ),
 
+--table to get the currency for each plant
 plant_cur AS (
 SELECT
     a.bukrs
@@ -27,6 +30,7 @@ INNER JOIN DW_STAGING.SAP_EUBEV.t001 b
     ON a.bukrs = b.bukrs
 ),
 
+--table to get the row with the latest year in MARDH table
 last_year AS (
 SELECT
     CONCAT(a.matnr, a.werks) AS pk
@@ -44,6 +48,7 @@ GROUP BY
     3
 ),
 
+--table to get the row with the latest month from latest year in MARDH table
 last_month AS (
 SELECT
     CONCAT(a.matnr, a.werks, a.lfgja) AS pk
@@ -62,6 +67,7 @@ GROUP BY
     ,4
 ),
 
+--table to get the current month's data from MARD table. This table brings only the quantity value.
 curmon_stock_position AS (
 SELECT
     CONCAT(a.matnr, a.werks) AS pk
@@ -86,6 +92,7 @@ FROM
     INNER JOIN plant_cur b ON a.werks = b.bwkey
 ),
 
+--table to get the current month's data from MARD table. This table brings amount values from MBEW and joins with MARDH results
 curmon_stock_amount AS (
 SELECT
     CONCAT(a.matnr, a.bwkey) AS pk
@@ -111,6 +118,7 @@ FROM
     INNER JOIN plant_cur c ON a.bwkey = c.bwkey
 ),
 
+--merging the quantity table with amount table. Here I am working only with current month's data yet.
 merged_curmon_stocks AS (
 SELECT
     CONCAT(RIGHT(a.material,9), a.werks, a.lfgja, a.lfmon) AS pk
@@ -136,6 +144,7 @@ INNER JOIN curmon_stock_amount b
 	ON CONCAT(a.material, a.werks, a.lfgja, a.lfmon) = CONCAT(b.material, b.bwkey, b.lfgja, b.lfmon) 
 ),
 
+--creating a historic table to later merge with current month's data. This table was built also to adjust the layout of columns
 hist_stock_position AS (
 SELECT
     CONCAT(a.matnr, a.werks) AS pk
@@ -161,12 +170,14 @@ FROM
     INNER JOIN plant_cur c ON a.werks = c.bwkey
 ),
 
+--merging all data (historic and current month data) in one single table.
 merged_hist_cur_stocks AS ( 
 SELECT * FROM hist_stock_position
 UNION ALL
 SELECT * FROM merged_curmon_stocks	
 ),
 
+--table to calculate the standard price from each month in MBEWH for historic data and MBEW for current month's data
 mat_std_price AS (
 SELECT 
 	RIGHT(a.matnr,9) AS new_matnr
@@ -197,6 +208,7 @@ INNER JOIN mat_master b
 	ON new_matnr = b.matnr
 ),
 
+--calculating the stock value per storage location of each month based on quantity in each storage location multiplied by the standard price
 calculated_stoloc_stock AS (
 SELECT
     a.material
@@ -234,6 +246,7 @@ ORDER BY
 
 ),
 
+--table to get all material movements in current month to sum with the current stock position
 mat_movs AS (
 SELECT
     RIGHT(a.matnr, 9) AS new_matnr
@@ -270,6 +283,7 @@ GROUP BY
     ,8
 ),
 
+--grouping the line items of previous table to have the total of material movements per storage location. THis table is looking only for quantities
 consolidated_qty_mat_movs AS (
 SELECT 
 	a.new_matnr
@@ -298,6 +312,7 @@ GROUP BY
 	,6
 ),
 
+--multipling the last table with standard price to get the amount of material movements
 consolidated_amount_mat_movs AS (
 SELECT 
 	a.new_matnr AS material
@@ -325,10 +340,10 @@ SELECT
 FROM consolidated_qty_mat_movs a
 ),
 
+--merging the table with stock value per storage locations with the consolidated material movements' table
 stock_calc_result AS (
 SELECT
-    'table A' as tablename
-    ,material
+    material
     ,werks
     ,sto_loc
     ,lfgja
@@ -355,8 +370,7 @@ FROM calculated_stoloc_stock
 UNION ALL
     
 SELECT
-    'table B' as tablename
-	,material
+    material
 	,werks
 	,sto_loc
 	,lfgja
@@ -381,7 +395,7 @@ SELECT
 FROM consolidated_amount_mat_movs
 )
 
- 
+--suming the results to get the final result of stock position until current date per storage location
 SELECT 
     material
 	,werks
