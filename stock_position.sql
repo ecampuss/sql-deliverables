@@ -1,21 +1,30 @@
---table to extract a primary key from MARDH to later join with other tables
-WITH materials AS (
-SELECT
-    DISTINCT CONCAT(matnr, werks) AS pk
-FROM
-    BALL_SANDBOX.USER_ESANTOS2.mardh
+--table to set the list of material groups for raw materials
+WITH mat_groups AS ( 
+    SELECT * FROM (VALUES
+                   ('11005'), ('11006'), ('11007'), ('11008'), 
+                   ('11009'), ('11010'), ('11011'), ('11012'), 
+                   ('11013'), ('11014'), ('11015'), ('11016'), 
+                   ('11017'), ('11018')) X(groups)
 ),
 
---material master data for raw material only
-mat_master AS (
+--table to extract a primary key from MARDH and join with 
+--material master data table to get material group number 
+--and description as well to later join with other tables
+materials AS ( 
 SELECT 
-	RIGHT(matnr,9) AS matnr
+	DISTINCT CONCAT(b.matnr, b.werks) AS pk,
+	a.matnr,
+	a.matkl,
+	c.wgbez 
 FROM 
-	DW_STAGING.SAP_EUBEV.mara
+    DW_STAGING.SAP_EUBEV.mara a 
+INNER JOIN BALL_SANDBOX.USER_ESANTOS2.mardh b 
+	ON RIGHT(a.matnr, 9) = b.matnr
+INNER JOIN DW_STAGING.SAP_EUBEV.t023t c
+	ON a.matkl = c.matkl
 WHERE 
-	matkl = '11006'
-ORDER BY 
-	1
+	a.matkl IN (SELECT * FROM mat_groups) 
+	AND c.spras = 'E' 
 ),
 
 --table to get the currency for each plant
@@ -166,21 +175,31 @@ SELECT
     ,a.vkuml AS st_trnsf_sp
 FROM
     BALL_SANDBOX.USER_ESANTOS2.mardh a
-    LEFT JOIN last_month b ON CONCAT(a.matnr, a.werks, a.lfgja, a.lfmon) = CONCAT(b.matnr, b.werks, b.lfgja, b.max_month)
-    INNER JOIN plant_cur c ON a.werks = c.bwkey
+LEFT JOIN last_month b 
+    ON CONCAT(a.matnr, a.werks, a.lfgja, a.lfmon) = CONCAT(b.matnr, b.werks, b.lfgja, b.max_month)
+INNER JOIN plant_cur c 
+	ON a.werks = c.bwkey
 ),
 
 --merging all data (historic and current month data) in one single table.
 merged_hist_cur_stocks AS ( 
-SELECT * FROM hist_stock_position
+SELECT 
+	* 
+FROM 
+	hist_stock_position
 UNION ALL
-SELECT * FROM merged_curmon_stocks	
+SELECT 
+	* 
+FROM 
+	merged_curmon_stocks	
 ),
 
 --table to calculate the standard price from each month in MBEWH for historic data and MBEW for current month's data
 mat_std_price AS (
 SELECT 
 	RIGHT(a.matnr,9) AS new_matnr
+	,b.matkl
+    ,b.wgbez
 	,a.bwkey
 	,CONCAT(a.lfgja,'.',a.lfmon) AS period
 	,a.lfgja
@@ -190,11 +209,13 @@ SELECT
 	,IFF(a.stprs = 0 AND a.peinh = 0, 0,(a.stprs/a.peinh)) AS std_price 
 FROM 
 	BALL_SANDBOX.USER_ESANTOS2.mbewh a
-INNER JOIN mat_master b 
-	ON new_matnr = b.matnr
+INNER JOIN materials b 
+	ON new_matnr = RIGHT(b.matnr, 9)
 UNION ALL 
 SELECT 
 	RIGHT(a.matnr,9) AS new_matnr
+	,b.matkl
+    ,b.wgbez
 	,a.bwkey
 	,CONCAT(a.lfgja,'.',a.lfmon) AS period
 	,a.lfgja
@@ -204,14 +225,16 @@ SELECT
 	,IFF(a.stprs = 0 AND a.peinh = 0, 0,(a.stprs/a.peinh)) AS std_price 
 FROM 
 	DW_STAGING.SAP_EUBEV.mbew a
-INNER JOIN mat_master b 
-	ON new_matnr = b.matnr
+INNER JOIN materials b 
+	ON new_matnr = RIGHT(b.matnr, 9)
 ),
 
 --calculating the stock value per storage location of each month based on quantity in each storage location multiplied by the standard price
 calculated_stoloc_stock AS (
 SELECT
     a.material
+    ,b.matkl
+    ,b.wgbez
     ,a.werks
     ,a.sto_loc
     ,a.lfgja
@@ -250,6 +273,8 @@ ORDER BY
 mat_movs AS (
 SELECT
     RIGHT(a.matnr, 9) AS new_matnr
+    ,c.matkl
+    ,c.wgbez
     ,a.werks
     ,a.bwart as mov_type
     ,a.lgort
@@ -269,8 +294,8 @@ FROM
     DW_STAGING.SAP_EUBEV.mseg a
 INNER JOIN DW_STAGING.SAP_EUBEV.mkpf b 
 	ON b.mblnr = a.mblnr AND b.mjahr = a.mjahr
-INNER JOIN mat_master c 
-	ON new_matnr = c.matnr
+INNER JOIN materials c 
+	ON new_matnr = RIGHT(c.matnr, 9)
 WHERE
     b.mjahr = a.mjahr AND b.mjahr = YEAR(DATE(GETDATE())) AND pst_month = MONTH(DATE(GETDATE()))
 GROUP BY
@@ -280,13 +305,17 @@ GROUP BY
     ,4
     ,5
     ,6
+    ,7
     ,8
+    ,10
 ),
 
 --grouping the line items of previous table to have the total of material movements per storage location. THis table is looking only for quantities
 consolidated_qty_mat_movs AS (
 SELECT 
 	a.new_matnr
+	,b.matkl
+    ,b.wgbez
 	,a.werks
 	,a.lgort AS sto_loc
 	,a.mjahr AS lfgja
@@ -310,12 +339,16 @@ GROUP BY
 	,4
 	,5
 	,6
+	,7
+	,8
 ),
 
 --multipling the last table with standard price to get the amount of material movements
 consolidated_amount_mat_movs AS (
 SELECT 
 	a.new_matnr AS material
+	,a.matkl
+    ,a.wgbez
 	,a.werks
 	,a.sto_loc
 	,a.lfgja
@@ -337,13 +370,16 @@ SELECT
     ,a.std_price * a.sp_stock_value AS sp_stock_value_amt
 	,a.st_trnsf_sp
     ,a.std_price * a.st_trnsf_sp AS st_trnsf_sp_amt
-FROM consolidated_qty_mat_movs a
+FROM 
+	consolidated_qty_mat_movs a
 ),
 
 --merging the table with stock value per storage locations with the consolidated material movements' table
 stock_calc_result AS (
 SELECT
     material
+    ,matkl
+    ,wgbez
     ,werks
     ,sto_loc
     ,lfgja
@@ -351,26 +387,15 @@ SELECT
     ,std_price
     ,unrestricted
     ,unrestricted_amt
-    ,stock_in_transfer
-    ,stock_in_transfer_amt
-    ,in_quality_insp
-    ,in_quality_insp_amt
-    ,restricted
-    ,restricted_amt
-    ,blocked
-    ,blocked_amt
-    ,returns_stock
-    ,returns_stock_amt
-    ,sp_stock_value
-    ,sp_stock_value_amt
-    ,st_trnsf_sp
-    ,st_trnsf_sp_amt
-FROM calculated_stoloc_stock
+FROM 
+	calculated_stoloc_stock
     
 UNION ALL
     
 SELECT
     material
+    ,matkl
+    ,wgbez
 	,werks
 	,sto_loc
 	,lfgja
@@ -378,26 +403,15 @@ SELECT
 	,std_price
 	,unrestricted
 	,unrestricted_amt
-	,stock_in_transfer
-    ,stock_in_transfer_amt
-	,in_quality_insp
-    ,in_quality_insp_amt
-	,restricted
-    ,restricted_amt
-	,blocked
-    ,blocked_amt
-	,returns_stock
-    ,returns_stock_amt
-	,sp_stock_value
-    ,sp_stock_value_amt
-	,st_trnsf_sp
-    ,st_trnsf_sp_amt
-FROM consolidated_amount_mat_movs
+FROM 
+	consolidated_amount_mat_movs
 )
 
---suming the results to get the final result of stock position until current date per storage location
+--summing the results to get the final result of stock position until current date per storage location
 SELECT 
     material
+    ,matkl
+    ,wgbez
 	,werks
 	,sto_loc
 	,lfgja
@@ -405,21 +419,17 @@ SELECT
 	,std_price
 	,SUM(unrestricted)
 	,SUM(unrestricted_amt)
-	,SUM(stock_in_transfer)
-    ,SUM(stock_in_transfer_amt)
-	,SUM(in_quality_insp)
-    ,SUM(in_quality_insp_amt)
-	,SUM(restricted)
-    ,SUM(restricted_amt)
-	,SUM(blocked)
-    ,SUM(blocked_amt)
-	,SUM(returns_stock)
-    ,SUM(returns_stock_amt)
-	,SUM(sp_stock_value)
-    ,SUM(sp_stock_value_amt)
-	,SUM(st_trnsf_sp)
-    ,SUM(st_trnsf_sp_amt)
-FROM stock_calc_result
-WHERE werks = 'SCLU' AND material LIKE '%642'
-GROUP BY 1,2,3,4,5,6
-ORDER BY 4,5
+FROM 
+	stock_calc_result
+GROUP BY 
+	1
+	,2
+	,3
+	,4
+	,5
+	,6
+	,7
+	,8
+ORDER BY 
+	4
+	,5
