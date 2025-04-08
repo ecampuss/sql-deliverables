@@ -1,0 +1,2 @@
+Due to the limitation of the Dataverse and the complexity of the final calculation, I had to split the logic in four different steps.
+These queries calculates the direct and shared costs posted by the leadership team and provides the total cost of ownership per area and per applications under the IT organization.
